@@ -31,7 +31,7 @@
         <h3>筛选条件</h3>
         <div class="sd-filters">
           <div class="sd-row"><label>查询周期</label><select id="sd-granularity" onchange="updateGranularityFilter()"><option value="month">月</option><option value="week">周</option><option value="day" selected>日</option></select><span id="sd-date-group"></span></div>
-          <div class="sd-row"><label>语言</label><select id="sd-region"><option value="all">全部语区</option><option value="en">英语区</option><option value="es">西语区</option><option value="zh">中文区</option></select><select id="sd-lang"><option value="all">全部语言</option><option>English</option><option>Spanish</option><option>Chinese</option></select></div>
+          <div class="sd-row"><label>来源</label><select id="sd-source" onchange="loadSearchDashboard()"><option value="">全部来源</option><option value="custom">手动搜索</option><option value="hot">热搜点击</option><option value="scroll_hot">滚动热搜</option><option value="history">历史搜索</option></select></div>
           <div class="sd-row"><label>国家</label><select id="sd-continent"><option value="all">全部大洲</option><option>北美</option><option>南美</option><option>欧洲</option><option>亚洲</option></select><select id="sd-country"><option value="all">全部国家</option><option>US</option><option>GB</option><option>MX</option><option>JP</option><option>BR</option><option>IN</option><option>DE</option></select></div>
           <div class="sd-row"><label></label><button class="btn btn-primary btn-sm" onclick="loadSearchDashboard()">搜索</button></div>
         </div>

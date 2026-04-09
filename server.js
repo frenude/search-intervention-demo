@@ -1,5 +1,6 @@
 const express = require('express');
 const { Pool } = require('pg');
+const mysql = require('mysql2/promise');
 const path = require('path');
 
 const app = express();
@@ -300,6 +301,310 @@ function hashCode(str) {
   }
   return hash;
 }
+
+// ===== StarRocks Connection Pool =====
+const srPool = mysql.createPool({
+  host: '18.189.20.30',
+  port: 9030,
+  user: 'backend',
+  password: 'JNs4d34Fgk50',
+  database: 'flow_event_info',
+  waitForConnections: true,
+  connectionLimit: 5,
+  connectTimeout: 15000,
+  enableKeepAlive: true,
+});
+
+// Helper: run StarRocks query with timeout
+async function srQuery(sql, params = [], timeoutMs = 30000) {
+  const conn = await srPool.getConnection();
+  try {
+    await conn.query(`SET query_timeout = ${Math.floor(timeoutMs / 1000)}`);
+    const [rows] = await conn.query(sql, params);
+    return rows;
+  } finally {
+    conn.release();
+  }
+}
+
+// ===== Search Dashboard APIs =====
+
+// GET /api/search-dashboard/filters
+app.get('/api/search-dashboard/filters', async (req, res) => {
+  try {
+    const [countries, sources] = await Promise.all([
+      srQuery(`SELECT country, COUNT(*) AS cnt FROM flow_event_info.tbl_app_event_search
+        WHERE event_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND product_name = 'flowgpt_app'
+          AND country IS NOT NULL AND country != ''
+        GROUP BY country ORDER BY cnt DESC LIMIT 30`, [], 15000),
+      srQuery(`SELECT DISTINCT query_source FROM flow_event_info.tbl_app_event_search
+        WHERE event_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND product_name = 'flowgpt_app'
+          AND query_source IS NOT NULL AND query_source != ''
+        ORDER BY query_source`, [], 15000),
+    ]);
+    res.json({
+      countries: countries.map(r => r.country),
+      query_sources: sources.map(r => r.query_source),
+    });
+  } catch (err) {
+    console.error('filters error:', err.message);
+    res.json({ countries: [], query_sources: ['custom', 'hot', 'scroll_hot', 'history'], error: err.message });
+  }
+});
+
+// GET /api/search-dashboard/kpi?days=1&query_source=&country=
+app.get('/api/search-dashboard/kpi', async (req, res) => {
+  const days = parseInt(req.query.days) || 1;
+  const qs = req.query.query_source || '';
+  const country = req.query.country || '';
+
+  // Build WHERE extras
+  let searchWhere = "AND product_name = 'flowgpt_app'";
+  let clickWhere = "AND source = 'search' AND product_name = 'flowgpt_app'";
+  if (qs) { searchWhere += ` AND query_source = '${qs.replace(/'/g, "''")}'`; }
+  if (country) {
+    searchWhere += ` AND country = '${country.replace(/'/g, "''")}'`;
+    clickWhere += ` AND country = '${country.replace(/'/g, "''")}'`;
+  }
+
+  try {
+    // Current period
+    const [searchCur, clickCur, successCur, dauCur] = await Promise.all([
+      srQuery(`SELECT COUNT(DISTINCT user_id) AS search_uv, COUNT(*) AS search_pv
+        FROM flow_event_info.tbl_app_event_search
+        WHERE event_date >= DATE_SUB(CURDATE(), INTERVAL ${days} DAY) AND event_date < CURDATE() ${searchWhere}`),
+      srQuery(`SELECT COUNT(DISTINCT user_id) AS click_uv, COUNT(*) AS click_pv
+        FROM flow_event_info.tbl_app_event_bot_view
+        WHERE event_date >= DATE_SUB(CURDATE(), INTERVAL ${days} DAY) AND event_date < CURDATE() ${clickWhere}`),
+      srQuery(`SELECT COUNT(DISTINCT s.search_id) AS total_searches,
+        COUNT(DISTINCT CASE WHEN b.search_id IS NOT NULL THEN s.search_id END) AS clicked_searches
+        FROM flow_event_info.tbl_app_event_search s
+        LEFT JOIN flow_event_info.tbl_app_event_bot_view b
+          ON s.search_id = b.search_id AND b.source = 'search' AND b.event_date = s.event_date
+        WHERE s.event_date >= DATE_SUB(CURDATE(), INTERVAL ${days} DAY) AND s.event_date < CURDATE()
+          AND s.product_name = 'flowgpt_app'
+          ${qs ? `AND s.query_source = '${qs.replace(/'/g, "''")}'` : ''}
+          ${country ? `AND s.country = '${country.replace(/'/g, "''")}'` : ''}`),
+      srQuery(`SELECT COUNT(DISTINCT user_id) AS dau
+        FROM flow_wide_info.tbl_wide_user_daily_info
+        WHERE event_date >= DATE_SUB(CURDATE(), INTERVAL ${days} DAY) AND event_date < CURDATE()`),
+    ]);
+
+    // Previous period for comparison
+    const [searchPrev, clickPrev, successPrev, dauPrev] = await Promise.all([
+      srQuery(`SELECT COUNT(DISTINCT user_id) AS search_uv, COUNT(*) AS search_pv
+        FROM flow_event_info.tbl_app_event_search
+        WHERE event_date >= DATE_SUB(CURDATE(), INTERVAL ${days * 2} DAY) AND event_date < DATE_SUB(CURDATE(), INTERVAL ${days} DAY) ${searchWhere}`),
+      srQuery(`SELECT COUNT(DISTINCT user_id) AS click_uv, COUNT(*) AS click_pv
+        FROM flow_event_info.tbl_app_event_bot_view
+        WHERE event_date >= DATE_SUB(CURDATE(), INTERVAL ${days * 2} DAY) AND event_date < DATE_SUB(CURDATE(), INTERVAL ${days} DAY) ${clickWhere}`),
+      srQuery(`SELECT COUNT(DISTINCT s.search_id) AS total_searches,
+        COUNT(DISTINCT CASE WHEN b.search_id IS NOT NULL THEN s.search_id END) AS clicked_searches
+        FROM flow_event_info.tbl_app_event_search s
+        LEFT JOIN flow_event_info.tbl_app_event_bot_view b
+          ON s.search_id = b.search_id AND b.source = 'search' AND b.event_date = s.event_date
+        WHERE s.event_date >= DATE_SUB(CURDATE(), INTERVAL ${days * 2} DAY) AND s.event_date < DATE_SUB(CURDATE(), INTERVAL ${days} DAY)
+          AND s.product_name = 'flowgpt_app'
+          ${qs ? `AND s.query_source = '${qs.replace(/'/g, "''")}'` : ''}
+          ${country ? `AND s.country = '${country.replace(/'/g, "''")}'` : ''}`),
+      srQuery(`SELECT COUNT(DISTINCT user_id) AS dau
+        FROM flow_wide_info.tbl_wide_user_daily_info
+        WHERE event_date >= DATE_SUB(CURDATE(), INTERVAL ${days * 2} DAY) AND event_date < DATE_SUB(CURDATE(), INTERVAL ${days} DAY)`),
+    ]);
+
+    const cur = {
+      search_uv: Number(searchCur[0]?.search_uv || 0),
+      search_pv: Number(searchCur[0]?.search_pv || 0),
+      click_uv: Number(clickCur[0]?.click_uv || 0),
+      click_pv: Number(clickCur[0]?.click_pv || 0),
+      total_searches: Number(successCur[0]?.total_searches || 0),
+      clicked_searches: Number(successCur[0]?.clicked_searches || 0),
+      dau: Number(dauCur[0]?.dau || 0),
+    };
+    const prev = {
+      search_uv: Number(searchPrev[0]?.search_uv || 0),
+      search_pv: Number(searchPrev[0]?.search_pv || 0),
+      click_uv: Number(clickPrev[0]?.click_uv || 0),
+      click_pv: Number(clickPrev[0]?.click_pv || 0),
+      total_searches: Number(successPrev[0]?.total_searches || 0),
+      clicked_searches: Number(successPrev[0]?.clicked_searches || 0),
+      dau: Number(dauPrev[0]?.dau || 0),
+    };
+
+    res.json({ current: cur, previous: prev });
+  } catch (err) {
+    console.error('kpi error:', err.message);
+    res.json({ current: {}, previous: {}, error: err.message });
+  }
+});
+
+// GET /api/search-dashboard/daily?days=30&query_source=&country=
+app.get('/api/search-dashboard/daily', async (req, res) => {
+  const days = parseInt(req.query.days) || 30;
+  const qs = req.query.query_source || '';
+  const country = req.query.country || '';
+
+  let searchWhere = "AND product_name = 'flowgpt_app'";
+  let clickWhere = "AND source = 'search' AND product_name = 'flowgpt_app'";
+  if (qs) { searchWhere += ` AND query_source = '${qs.replace(/'/g, "''")}'`; }
+  if (country) {
+    searchWhere += ` AND country = '${country.replace(/'/g, "''")}'`;
+    clickWhere += ` AND country = '${country.replace(/'/g, "''")}'`;
+  }
+
+  try {
+    const [searchRows, clickRows, successRows, dauRows] = await Promise.all([
+      srQuery(`SELECT event_date, COUNT(DISTINCT user_id) AS search_uv, COUNT(*) AS search_pv
+        FROM flow_event_info.tbl_app_event_search
+        WHERE event_date >= DATE_SUB(CURDATE(), INTERVAL ${days} DAY) ${searchWhere}
+        GROUP BY event_date ORDER BY event_date DESC`),
+      srQuery(`SELECT event_date, COUNT(DISTINCT user_id) AS click_uv, COUNT(*) AS click_pv
+        FROM flow_event_info.tbl_app_event_bot_view
+        WHERE event_date >= DATE_SUB(CURDATE(), INTERVAL ${days} DAY) ${clickWhere}
+        GROUP BY event_date ORDER BY event_date DESC`),
+      srQuery(`SELECT s.event_date,
+        COUNT(DISTINCT s.search_id) AS total_searches,
+        COUNT(DISTINCT CASE WHEN b.search_id IS NOT NULL THEN s.search_id END) AS clicked_searches
+        FROM flow_event_info.tbl_app_event_search s
+        LEFT JOIN flow_event_info.tbl_app_event_bot_view b
+          ON s.search_id = b.search_id AND b.source = 'search' AND b.event_date = s.event_date
+        WHERE s.event_date >= DATE_SUB(CURDATE(), INTERVAL ${days} DAY)
+          AND s.product_name = 'flowgpt_app'
+          ${qs ? `AND s.query_source = '${qs.replace(/'/g, "''")}'` : ''}
+          ${country ? `AND s.country = '${country.replace(/'/g, "''")}'` : ''}
+        GROUP BY s.event_date ORDER BY s.event_date DESC`),
+      srQuery(`SELECT event_date, COUNT(DISTINCT user_id) AS dau
+        FROM flow_wide_info.tbl_wide_user_daily_info
+        WHERE event_date >= DATE_SUB(CURDATE(), INTERVAL ${days} DAY)
+        GROUP BY event_date ORDER BY event_date DESC`),
+    ]);
+
+    // Merge by date
+    const dateMap = {};
+    const toDateStr = (d) => {
+      if (!d) return null;
+      if (typeof d === 'string') return d.slice(0, 10);
+      return new Date(d).toISOString().slice(0, 10);
+    };
+    for (const r of searchRows) {
+      const d = toDateStr(r.event_date); if (!d) continue;
+      if (!dateMap[d]) dateMap[d] = {};
+      dateMap[d].search_uv = Number(r.search_uv);
+      dateMap[d].search_pv = Number(r.search_pv);
+    }
+    for (const r of clickRows) {
+      const d = toDateStr(r.event_date); if (!d) continue;
+      if (!dateMap[d]) dateMap[d] = {};
+      dateMap[d].click_uv = Number(r.click_uv);
+      dateMap[d].click_pv = Number(r.click_pv);
+    }
+    for (const r of successRows) {
+      const d = toDateStr(r.event_date); if (!d) continue;
+      if (!dateMap[d]) dateMap[d] = {};
+      dateMap[d].total_searches = Number(r.total_searches);
+      dateMap[d].clicked_searches = Number(r.clicked_searches);
+    }
+    for (const r of dauRows) {
+      const d = toDateStr(r.event_date); if (!d) continue;
+      if (!dateMap[d]) dateMap[d] = {};
+      dateMap[d].dau = Number(r.dau);
+    }
+
+    const rows = Object.keys(dateMap).sort((a, b) => b.localeCompare(a)).map(date => ({
+      date,
+      search_uv: dateMap[date].search_uv || 0,
+      search_pv: dateMap[date].search_pv || 0,
+      click_uv: dateMap[date].click_uv || 0,
+      click_pv: dateMap[date].click_pv || 0,
+      total_searches: dateMap[date].total_searches || 0,
+      clicked_searches: dateMap[date].clicked_searches || 0,
+      dau: dateMap[date].dau || 0,
+    }));
+
+    res.json({ rows });
+  } catch (err) {
+    console.error('daily error:', err.message);
+    res.json({ rows: [], error: err.message });
+  }
+});
+
+// GET /api/hot-search/ranking?days=7&query_source=&country=&limit=50
+app.get('/api/hot-search/ranking', async (req, res) => {
+  const days = parseInt(req.query.days) || 7;
+  const limit = parseInt(req.query.limit) || 50;
+  const qs = req.query.query_source || '';
+  const country = req.query.country || '';
+
+  let extraWhere = '';
+  if (qs) extraWhere += ` AND s.query_source = '${qs.replace(/'/g, "''")}'`;
+  if (country) extraWhere += ` AND s.country = '${country.replace(/'/g, "''")}'`;
+
+  try {
+    // Current window
+    const currentRows = await srQuery(`
+      SELECT UPPER(s.search_text) AS keyword,
+        COUNT(DISTINCT s.user_id) AS search_uv,
+        COUNT(*) AS search_pv,
+        COUNT(DISTINCT CASE WHEN b.search_id IS NOT NULL THEN s.user_id END) AS click_uv
+      FROM flow_event_info.tbl_app_event_search s
+      LEFT JOIN flow_event_info.tbl_app_event_bot_view b
+        ON s.search_id = b.search_id AND b.source = 'search' AND b.event_date = s.event_date
+      WHERE s.event_date >= DATE_SUB(CURDATE(), INTERVAL ${days} DAY)
+        AND s.product_name = 'flowgpt_app'
+        AND s.search_text IS NOT NULL AND s.search_text != ''
+        ${extraWhere}
+      GROUP BY UPPER(s.search_text)
+      ORDER BY search_uv DESC
+      LIMIT ${limit}
+    `, [], 60000);
+
+    // Previous window for rank change
+    const prevRows = await srQuery(`
+      SELECT UPPER(s.search_text) AS keyword,
+        COUNT(DISTINCT s.user_id) AS search_uv
+      FROM flow_event_info.tbl_app_event_search s
+      WHERE s.event_date >= DATE_SUB(CURDATE(), INTERVAL ${days * 2} DAY)
+        AND s.event_date < DATE_SUB(CURDATE(), INTERVAL ${days} DAY)
+        AND s.product_name = 'flowgpt_app'
+        AND s.search_text IS NOT NULL AND s.search_text != ''
+        ${extraWhere}
+      GROUP BY UPPER(s.search_text)
+      ORDER BY search_uv DESC
+      LIMIT ${limit * 2}
+    `, [], 60000);
+
+    // Build prev rank map
+    const prevRankMap = {};
+    prevRows.forEach((r, i) => { prevRankMap[r.keyword] = i + 1; });
+
+    const ranking = currentRows.map((r, i) => {
+      const curRank = i + 1;
+      const prevRank = prevRankMap[r.keyword] || null;
+      let trend = 'new';
+      let trendValue = 0;
+      if (prevRank !== null) {
+        trendValue = prevRank - curRank;
+        if (trendValue > 0) trend = 'up';
+        else if (trendValue < 0) trend = 'down';
+        else trend = 'same';
+      }
+      return {
+        rank: curRank,
+        keyword: r.keyword,
+        search_uv: Number(r.search_uv),
+        search_pv: Number(r.search_pv),
+        click_uv: Number(r.click_uv),
+        trend,
+        trend_value: Math.abs(trendValue),
+      };
+    });
+
+    res.json({ ranking, days, limit });
+  } catch (err) {
+    console.error('hot-search ranking error:', err.message);
+    res.json({ ranking: [], days, limit, error: err.message });
+  }
+});
 
 const PORT = process.env.PORT || 3456;
 app.listen(PORT, '0.0.0.0', () => {
