@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>搜索优化管理系统</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <nav class="sidebar">
+    <div class="logo">🔍 搜索管理</div>
+    <ul>
+      <li class="active" data-page="search-dashboard"><span class="icon">◉</span> 搜索大盘</li>
+      <li data-page="monitor"><span class="icon">◉</span> 热搜监控</li>
+      <li data-page="dashboard"><span class="icon">◉</span> 搜索结果干预</li>
+      <li data-page="auto-optimize"><span class="icon">◉</span> 搜索结果自动优化</li>
+      <li data-page="hot-search"><span class="icon">◉</span> 热搜词干预</li>
+      <li data-page="hot-search-auto"><span class="icon">◉</span> 热搜词自动优化</li>
+      <li data-page="trending"><span class="icon">◉</span> 热门词干预</li>
+      <li data-page="trending-auto"><span class="icon">◉</span> 热门词自动优化</li>
+      <li data-page="blacklist"><span class="icon">◉</span> 黑名单</li>
+      <li data-page="health"><span class="icon">◉</span> 搜索监控</li>
+    </ul>
+  </nav>
+  <main class="content">
+    <!-- Search Dashboard (搜索大盘) -->
+    <div id="page-search-dashboard" class="page active">
+      <div class="page-header"><h1>搜索大盘</h1></div>
+      <div class="card" id="sd-filter-card">
+        <h3>筛选条件</h3>
+        <div class="sd-filters">
+          <div class="sd-row"><label>查询周期</label><select id="sd-granularity" onchange="updateGranularityFilter()"><option value="month">月</option><option value="week">周</option><option value="day" selected>日</option></select><span id="sd-date-group"></span></div>
+          <div class="sd-row"><label>语言</label><select id="sd-region"><option value="all">全部语区</option><option value="en">英语区</option><option value="es">西语区</option><option value="zh">中文区</option></select><select id="sd-lang"><option value="all">全部语言</option><option>English</option><option>Spanish</option><option>Chinese</option></select></div>
+          <div class="sd-row"><label>国家</label><select id="sd-continent"><option value="all">全部大洲</option><option>北美</option><option>南美</option><option>欧洲</option><option>亚洲</option></select><select id="sd-country"><option value="all">全部国家</option><option>US</option><option>GB</option><option>MX</option><option>JP</option><option>BR</option><option>IN</option><option>DE</option></select></div>
+          <div class="sd-row"><label></label><button class="btn btn-primary btn-sm" onclick="loadSearchDashboard()">搜索</button></div>
+        </div>
+      </div>
+      <div class="kpi-row" id="sd-kpis"></div>
+      <div class="card" id="sd-detail-card">
+        <div class="card-header-row"><h3>详细数据</h3><button class="btn btn-primary btn-sm" onclick="exportSearchDashboard()">导出Excel表</button></div>
+        <div class="table-wrap" id="sd-table"></div>
+      </div>
+    </div>
+    <!-- Monitor (热搜监控) -->
+    <div id="page-monitor" class="page">
+      <div class="page-header"><h1>热搜监控</h1></div>
+      <div id="monitor-content"></div>
+    </div>
+    <!-- Dashboard (搜索优化) -->
+    <div id="page-dashboard" class="page">
+      <div class="page-header"><h1>搜索结果干预</h1></div>
+      <div class="filters" id="dashboard-filters">
+        <div class="filter-group"><label>关键词搜索</label><input type="text" id="filter-keyword" placeholder="搜索标准实体..." onkeyup="if(event.key==='Enter')loadDashboard()" style="padding:6px 12px;border:1px solid #333;border-radius:6px;background:#1a1a1a;color:#e0e0e0;font-size:13px;width:180px"></div>
+        <div class="filter-group"><label>周期</label><select id="filter-period" onchange="loadDashboard()"><option value="daily">每日</option><option value="3day">每3天</option><option value="weekly">每周</option></select></div>
+        <div class="filter-group"><label>类型</label><select id="filter-type" onchange="loadDashboard()"><option value="all">全部</option><option value="character">角色</option><option value="work">作品</option><option value="generic">通用词</option></select></div>
+        <div class="filter-group"><label>干预状态</label><select id="filter-status" onchange="loadDashboard()"><option value="all">全部</option><option value="none">未干预</option><option value="draft">草稿</option><option value="published">已上线</option><option value="experimenting">实验中</option></select></div>
+        <div class="filter-group"><label>最新干预</label><select id="filter-intervention-time" onchange="loadDashboard()"><option value="all">全部</option><option value="today">今天</option><option value="7d">近7天</option><option value="30d">近30天</option></select></div>
+        <div class="filter-group"><label>排序</label><select id="filter-sort" onchange="loadDashboard()"><option value="volume">搜索量↓</option><option value="success_rate">成功率↑</option><option value="uv">搜索人数↓</option></select></div>
+        <div class="filter-right"><button class="btn btn-outline" onclick="showMappingModal()">映射规则</button></div>
+      </div>
+      <div id="dashboard-table" class="table-container"></div>
+    </div>
+    <!-- Hot Search Intervention (热搜词干预) -->
+    <div id="page-hot-search" class="page">
+      <div class="page-header"><h1>热搜词干预</h1><div class="header-actions"><button class="btn btn-primary btn-sm" onclick="createHotSearchPlan()">+ 新建干预计划</button></div></div>
+      <div id="hot-search-plans"></div>
+    </div>
+    <!-- Hot Search Editor -->
+    <div id="page-hot-search-edit" class="page">
+      <div class="page-header"><h1 id="hs-edit-title">新建热搜词干预计划</h1><div class="header-actions"><button class="btn btn-outline" onclick="navigateTo('hot-search')">← 返回列表</button><button class="btn btn-primary btn-sm" onclick="saveHsPlan()">保存</button><button class="btn btn-sm" style="background:#00b894;color:#fff" onclick="submitHsPlan()">提交审核</button></div></div>
+      <div class="editor-body" id="hot-search-editor"></div>
+    </div>
+    <!-- Trending Intervention (热门词干预) -->
+    <div id="page-trending" class="page">
+      <div class="page-header"><h1>热门词干预</h1><div class="header-actions"><button class="btn btn-primary btn-sm" onclick="createTrendingPlan()">+ 新建干预计划</button></div></div>
+      <div id="trending-plans"></div>
+    </div>
+    <!-- Trending Editor -->
+    <div id="page-trending-edit" class="page">
+      <div class="page-header"><h1 id="tr-edit-title">新建热门词干预计划</h1><div class="header-actions"><button class="btn btn-outline" onclick="navigateTo('trending')">← 返回列表</button><button class="btn btn-primary btn-sm" onclick="saveTrPlan()">保存</button><button class="btn btn-sm" style="background:#00b894;color:#fff" onclick="submitTrPlan()">提交审核</button></div></div>
+      <div class="editor-body" id="trending-editor"></div>
+    </div>
+    <!-- Auto Optimize (自动优化) -->
+    <div id="page-auto-optimize" class="page">
+      <div class="page-header"><h1>搜索结果自动优化</h1><div class="header-actions">
+        <select id="ao-time-range" onchange="loadAutoOptimize()" style="padding:6px 12px;border-radius:6px;border:1px solid #333;background:#1a1a1a;color:#e0e0e0;font-size:13px">
+          <option value="7d">近7天</option><option value="14d">近14天</option><option value="30d" selected>近30天</option><option value="90d">近90天</option><option value="all">全部时间</option>
+        </select>
+        <button class="btn btn-outline" onclick="showAoRulesModal()">⚙️ 规则调整</button>
+      </div></div>
+      <div class="kpi-row" id="ao-kpis" style="grid-template-columns:repeat(6,1fr)"></div>
+      <div class="card" id="ao-list-card">
+        <div class="card-header-row">
+          <h3>搜索词优化列表</h3>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select id="ao-filter-status" onchange="loadAutoOptimize()" style="padding:6px 12px;border-radius:6px;border:1px solid #333;background:#1a1a1a;color:#e0e0e0;font-size:13px">
+              <option value="all">全部状态</option><option value="graduated">已毕业</option><option value="experimenting">实验中</option><option value="supply">补供给中</option><option value="diagnosing">待诊断</option>
+            </select>
+            <select id="ao-filter-type" onchange="loadAutoOptimize()" style="padding:6px 12px;border-radius:6px;border:1px solid #333;background:#1a1a1a;color:#e0e0e0;font-size:13px">
+              <option value="all">全部类型</option><option value="character">角色</option><option value="work">作品</option><option value="generic">泛需求</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-wrap" id="ao-table"></div>
+      </div>
+    </div>
+    <!-- Auto Optimize Detail -->
+    <div id="page-ao-detail" class="page">
+      <div class="page-header"><h1 id="ao-detail-title">搜索词详情</h1><div class="header-actions" id="ao-detail-actions"></div></div>
+      <div id="ao-detail-content"></div>
+    </div>
+    <!-- Hot Search Auto Optimize (热搜词自动优化) -->
+    <div id="page-hot-search-auto" class="page">
+      <div class="page-header"><h1>热搜词自动优化</h1><div class="header-actions">
+        <select id="hsa-time-range" onchange="loadHotSearchAuto()" style="padding:6px 12px;border-radius:6px;border:1px solid #333;background:#1a1a1a;color:#e0e0e0;font-size:13px">
+          <option value="7d">近7天</option><option value="14d">近14天</option><option value="30d" selected>近30天</option><option value="90d">近90天</option><option value="all">全部时间</option>
+        </select>
+        <button class="btn btn-outline" onclick="showHsaRulesModal()">⚙️ 规则调整</button>
+      </div></div>
+      <div class="kpi-row" id="hsa-kpis" style="grid-template-columns:repeat(6,1fr)"></div>
+      <div class="card">
+        <div class="card-header-row">
+          <h3>热搜词优化列表</h3>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select id="hsa-filter-status" onchange="loadHotSearchAuto()" style="padding:6px 12px;border-radius:6px;border:1px solid #333;background:#1a1a1a;color:#e0e0e0;font-size:13px">
+              <option value="all">全部状态</option><option value="online">在线</option><option value="experimenting">实验中</option><option value="fatigued">疲劳</option><option value="candidate">候选</option><option value="offline">已下线</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-wrap" id="hsa-table"></div>
+      </div>
+    </div>
+    <!-- Hot Search Auto Detail -->
+    <div id="page-hsa-detail" class="page">
+      <div class="page-header"><h1 id="hsa-detail-title">热搜词详情</h1><div class="header-actions" id="hsa-detail-actions"></div></div>
+      <div id="hsa-detail-content"></div>
+    </div>
+    <!-- Trending Auto Optimize (热门词自动优化) -->
+    <div id="page-trending-auto" class="page">
+      <div class="page-header"><h1>热门词自动优化</h1><div class="header-actions">
+        <select id="tra-time-range" onchange="loadTrendingAuto()" style="padding:6px 12px;border-radius:6px;border:1px solid #333;background:#1a1a1a;color:#e0e0e0;font-size:13px">
+          <option value="7d">近7天</option><option value="14d">近14天</option><option value="30d" selected>近30天</option><option value="90d">近90天</option><option value="all">全部时间</option>
+        </select>
+        <button class="btn btn-outline" onclick="showTraRulesModal()">⚙️ 规则调整</button>
+      </div></div>
+      <div class="kpi-row" id="tra-kpis" style="grid-template-columns:repeat(6,1fr)"></div>
+      <div class="card">
+        <div class="card-header-row">
+          <h3>热门词优化列表</h3>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select id="tra-filter-status" onchange="loadTrendingAuto()" style="padding:6px 12px;border-radius:6px;border:1px solid #333;background:#1a1a1a;color:#e0e0e0;font-size:13px">
+              <option value="all">全部状态</option><option value="online">在线</option><option value="experimenting">实验中</option><option value="fatigued">疲劳</option><option value="candidate">候选</option><option value="offline">已下线</option>
+            </select>
+            <select id="tra-filter-category" onchange="loadTrendingAuto()" style="padding:6px 12px;border-radius:6px;border:1px solid #333;background:#1a1a1a;color:#e0e0e0;font-size:13px">
+              <option value="all">全部品类</option><option value="content">内容类型</option><option value="emotion">情感类型</option><option value="interaction">互动类型</option><option value="special">特殊标签</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-wrap" id="tra-table"></div>
+      </div>
+    </div>
+    <!-- Trending Auto Detail -->
+    <div id="page-tra-detail" class="page">
+      <div class="page-header"><h1 id="tra-detail-title">热门词详情</h1><div class="header-actions" id="tra-detail-actions"></div></div>
+      <div id="tra-detail-content"></div>
+    </div>
+    <!-- Blacklist (黑名单) -->
+    <div id="page-blacklist" class="page">
+      <div class="page-header"><h1>黑名单管理</h1><div class="header-actions"><button class="btn btn-primary btn-sm" onclick="addBlacklistWord()">+ 添加黑名单</button></div></div>
+      <div id="blacklist-content"></div>
+    </div>
+    <!-- Health -->
+    <div id="page-health" class="page">
+      <div class="page-header"><h1>搜索监控</h1></div>
+      <div class="alert-list" id="health-alerts"></div>
+    </div>
+    <!-- Editor -->
+    <div id="page-editor" class="page editor-page">
+      <div class="editor-top-bar">
+        <div class="editor-top-left"><button class="btn btn-back" onclick="goBack()">← 返回</button><h1 id="editor-title">优化方案</h1></div>
+        <div class="editor-top-right" id="editor-top-actions"><button class="btn btn-outline" onclick="saveDraft()">保存草稿</button><button class="btn btn-primary" onclick="submitAndWaitReview()">提交审核 →</button></div>
+      </div>
+      <div class="step-tabs">
+        <div class="step-tab active" data-step="edit" onclick="switchStep('edit')"><span class="step-num">1</span> 搜索排序编辑</div>
+        <div class="step-tab" data-step="experiment" onclick="switchStep('experiment')"><span class="step-num">2</span> 流量实验</div>
+        <div class="step-tab" data-step="publish" onclick="switchStep('publish')"><span class="step-num">3</span> 全量发布</div>
+      </div>
+      <div id="step-edit" class="step-content active">
+        <div class="editor-body">
+          <div class="editor-col col-left">
+            <div class="col-header"><h3>📊 算法排序结果</h3><div class="col-metrics"><span class="metric">搜索成功率 <strong id="current-success-rate">--</strong></span></div></div>
+            <div class="col-stats" id="algo-stats">
+              <div class="stat-item"><span class="stat-label">有结果率</span><span class="stat-val" id="algo-result-rate">--</span></div>
+              <div class="stat-item"><span class="stat-label">点击率</span><span class="stat-val" id="algo-click-rate">--</span></div>
+              <div class="stat-item"><span class="stat-label">开聊率</span><span class="stat-val" id="algo-chat-rate">--</span></div>
+            </div>
+            <div id="algo-results" class="bot-list"></div>
+          </div>
+          <div class="editor-col col-middle">
+            <div class="col-header"><h3>🎯 干预方案</h3><div class="col-metrics"><span class="metric">预估成功率 <strong id="estimated-rate" class="rate-highlight">--</strong><span class="hint">仅供参考</span></span></div></div>
+            <div class="col-stats" id="intervention-stats">
+              <div class="stat-item"><span class="stat-label">预估有结果率</span><span class="stat-val" id="est-result-rate">--</span></div>
+              <div class="stat-item"><span class="stat-label">预估点击率</span><span class="stat-val" id="est-click-rate">--</span></div>
+              <div class="stat-item"><span class="stat-label">预估开聊率</span><span class="stat-val" id="est-chat-rate">--</span></div>
+            </div>
+            <div class="intervention-section">
+              <div class="section-title">干预位次 <button class="btn btn-sm" onclick="addSlot()">+ 添加位次</button></div>
+              <div id="intervention-slots" class="slots-list"></div>
+            </div>
+            <div class="candidate-section">
+              <div class="section-title">候选池</div>
+              <div class="candidate-search"><input type="text" id="candidate-search" placeholder="搜索 bot..." onkeyup="searchCandidates(event)"><button class="btn btn-sm" onclick="searchCandidates()">搜索</button></div>
+              <div id="candidate-list" class="bot-list"></div>
+            </div>
+          </div>
+          <div class="editor-col col-right">
+            <div class="col-header"><h3>📱 移动端预览</h3><button class="btn btn-sm" onclick="refreshPreview()">刷新</button></div>
+            <div class="mobile-preview-container">
+              <div class="mobile-frame">
+                <div class="mobile-notch"></div>
+                <div class="mobile-search-bar"><span class="search-icon">🔍</span><span id="preview-keyword" class="search-text">keyword</span></div>
+                <div id="mobile-results" class="mobile-results-list"></div>
+                <div class="mobile-home-bar"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="step-experiment" class="step-content"><div class="step-panel" id="experiment-panel"></div></div>
+      <div id="step-publish" class="step-content"><div class="step-panel" id="publish-panel"></div></div>
+    </div>
+  </main>
+</div>
+<div id="mapping-modal" class="modal hidden"><div class="modal-content"><div class="modal-header"><h2>搜索词映射规则</h2><button class="modal-close" onclick="closeMappingModal()">×</button></div><div class="modal-body" id="mapping-body"></div></div></div>
+<div id="detail-modal" class="modal hidden"><div class="modal-content modal-lg"><div class="modal-header"><h2 id="detail-modal-title">热搜词明细</h2><button class="modal-close" onclick="closeDetailModal()">×</button></div><div class="modal-body" id="detail-modal-body"></div></div></div>
+<div id="blacklist-modal" class="modal hidden"><div class="modal-content"><div class="modal-header"><h2 id="bl-modal-title">添加黑名单</h2><button class="modal-close" onclick="closeBlacklistModal()">×</button></div><div class="modal-body" id="bl-modal-body"></div></div></div>
+<div id="ao-rules-modal" class="modal hidden"><div class="modal-content modal-lg"><div class="modal-header"><h2>自动优化规则配置</h2><button class="modal-close" onclick="closeAoRulesModal()">×</button></div><div class="modal-body" id="ao-rules-body"></div></div></div>
+<div id="hsa-rules-modal" class="modal hidden"><div class="modal-content modal-lg"><div class="modal-header"><h2>热搜词自动优化规则</h2><button class="modal-close" onclick="closeHsaRulesModal()">×</button></div><div class="modal-body" id="hsa-rules-body"></div></div></div>
+<div id="tra-rules-modal" class="modal hidden"><div class="modal-content modal-lg"><div class="modal-header"><h2>热门词自动优化规则</h2><button class="modal-close" onclick="closeTraRulesModal()">×</button></div><div class="modal-body" id="tra-rules-body"></div></div></div>
+<script src="app.js"></script>
+</body>
+</html>
