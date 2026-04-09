@@ -7,6 +7,18 @@ const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Fallback: serve data files explicitly for serverless environments
+const fs = require('fs');
+app.get('/data/:file', (req, res) => {
+  const filePath = path.join(__dirname, 'public', 'data', req.params.file);
+  if (fs.existsSync(filePath)) {
+    res.setHeader('Content-Type', 'application/json');
+    res.send(fs.readFileSync(filePath, 'utf8'));
+  } else {
+    res.status(404).json({ error: 'File not found' });
+  }
+});
+
 // Prod DB (read-only)
 const pool = new Pool({
   connectionString: 'postgresql://prod_jan_12:s8vSL5Q6IAR6HwWMY5FXb5JPrgk7xYam@prod-1.cluster-cmg2ypxvbvye.us-east-2.rds.amazonaws.com:5432/prod',
