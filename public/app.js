@@ -175,7 +175,7 @@ async function loadMonitor(){
     </div>`;
   // Load countries for filter
   try{
-    const fResp=await fetch('/api/search-dashboard/filters');
+    const fResp=await fetch('/data/filters.json');
     const fData=await fResp.json();
     const sel=document.getElementById('hs-country');
     if(sel&&fData.countries){
@@ -195,10 +195,13 @@ async function refreshMonitorRanking(){
   if(!card)return;
   card.innerHTML='<div style="text-align:center;padding:40px;color:#666">加载中...</div>';
   try{
-    const resp=await fetch(`/api/hot-search/ranking?days=${days}&query_source=${qs}&country=${country}&limit=${limit}`);
+    const resp=await fetch(`/data/hot-search-${days}d.json`);
     const data=await resp.json();
     _monitorRankingCache=data.ranking||[];
-    renderMonitorRanking(_monitorRankingCache,days);
+    // Client-side limit
+    const limitNum=parseInt(limit)||200;
+    const limited=_monitorRankingCache.slice(0,limitNum);
+    renderMonitorRanking(limited,days);
   }catch(e){
     card.innerHTML=`<div style="color:#e74c3c;padding:20px">加载失败: ${e.message}</div>`;
   }
@@ -575,8 +578,8 @@ async function loadSearchDashboard(){
   // Fetch KPI + daily in parallel
   try{
     const [kpiResp, dailyResp]=await Promise.all([
-      fetch(`/api/search-dashboard/kpi?days=1&query_source=${qs}&country=${countryParam}`),
-      fetch(`/api/search-dashboard/daily?days=30&query_source=${qs}&country=${countryParam}`)
+      fetch('/data/kpi.json'),
+      fetch('/data/daily.json')
     ]);
     const kpiData=await kpiResp.json();
     const dailyData=await dailyResp.json();
