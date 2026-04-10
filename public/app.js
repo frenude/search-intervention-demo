@@ -138,123 +138,126 @@ function toggleDashboardSort(col){
 }
 function getStatusText(s){return{none:'未干预',draft:'草稿',pending_review:'待审核',approved:'已通过',experimenting:'实验中',published:'已上线',rolled_back:'已回滚',archived:'已归档'}[s]||s}
 // ===== Monitor (热搜监控) =====
-// ===== Monitor (热搜监控) - Real Data =====
+// --- Cached hot search data ---
+let _hsCache={};
+async function _ensureHSData(days){
+  const key=days+'d';
+  if(!_hsCache[key]){
+    const resp=await fetch(`/data/hot-search-${key}.json`);
+    _hsCache[key]=(await resp.json()).ranking||[];
+  }
+  return _hsCache[key];
+}
+function _fmtK(n){if(n>=1000)return (n/1000).toFixed(1)+'k';return String(n);}
 async function loadMonitor(){
   const c=document.getElementById('monitor-content');
   const now=new Date().toLocaleString('zh-CN');
-  // Build the monitor UI with filters + a single ranking table
-  c.innerHTML=`
-    <div class="monitor-region">
-      <div class="monitor-region-header">
-        <h2>热搜词排行</h2>
-        <div class="update-time">最新数据更新时间：${now}</div>
-      </div>
-      <div class="detail-filters" style="margin-bottom:16px">
-        <div class="filter-group"><label>时间窗口</label>
-          <select id="hs-time" onchange="refreshMonitorRanking()">
-            <option value="1">24H</option><option value="3">3D</option><option value="7" selected>7D</option><option value="30">30D</option>
-          </select></div>
-        <div class="filter-group"><label>来源</label>
-          <select id="hs-source" onchange="refreshMonitorRanking()">
-            <option value="">全部</option><option value="custom">手动搜索</option><option value="hot">热搜点击</option><option value="scroll_hot">滚动热搜</option><option value="history">历史搜索</option>
-          </select></div>
-        <div class="filter-group"><label>国家</label>
-          <select id="hs-country" onchange="refreshMonitorRanking()">
-            <option value="">全部</option>
-          </select></div>
-        <div class="filter-group"><label>数量</label>
-          <select id="hs-limit" onchange="refreshMonitorRanking()">
-            <option value="20">TOP 20</option><option value="50" selected>TOP 50</option><option value="100">TOP 100</option><option value="200">TOP 200</option>
-          </select></div>
-      </div>
-      <div class="monitor-cards" style="grid-template-columns:1fr">
-        <div class="monitor-card" id="hs-ranking-card" style="max-width:100%">
-          <div style="text-align:center;padding:40px;color:#666">加载中...</div>
-        </div>
-      </div>
-    </div>`;
-  // Load countries for filter
-  try{
-    const fResp=await fetch('/data/filters.json');
-    const fData=await fResp.json();
-    const sel=document.getElementById('hs-country');
-    if(sel&&fData.countries){
-      fData.countries.forEach(c=>{const o=document.createElement('option');o.value=c;o.textContent=c;sel.appendChild(o);});
-    }
-  }catch(e){console.error('filters:',e)}
-  refreshMonitorRanking();
-}
-
-let _monitorRankingCache=[];
-async function refreshMonitorRanking(){
-  const days=document.getElementById('hs-time')?.value||'7';
-  const qs=document.getElementById('hs-source')?.value||'';
-  const country=document.getElementById('hs-country')?.value||'';
-  const limit=document.getElementById('hs-limit')?.value||'50';
-  const card=document.getElementById('hs-ranking-card');
-  if(!card)return;
-  card.innerHTML='<div style="text-align:center;padding:40px;color:#666">加载中...</div>';
-  try{
-    const resp=await fetch(`/data/hot-search-${days}d.json`);
-    const data=await resp.json();
-    _monitorRankingCache=data.ranking||[];
-    // Client-side limit
-    const limitNum=parseInt(limit)||200;
-    const limited=_monitorRankingCache.slice(0,limitNum);
-    renderMonitorRanking(limited,days);
-  }catch(e){
-    card.innerHTML=`<div style="color:#e74c3c;padding:20px">加载失败: ${e.message}</div>`;
+  // Load all period data
+  let hs1,hs24,hs3;
+  try{[hs1,hs24,hs3]=await Promise.all([_ensureHSData(1),_ensureHSData(3),_ensureHSData(7)]);}catch(e){c.innerHTML='<div style="color:#e74c3c;padding:20px">'+e.message+'</div>';return;}
+  function toMkw(arr,limit){return (arr||[]).slice(0,limit||20).map(r=>({kw:r.keyword,trend:r.trend,tv:r.trend_value||0,suv:_fmtK(r.search_uv),cuv:_fmtK(r.click_uv),cr:r.search_uv?(r.click_uv/r.search_uv*100).toFixed(1)+'%':'--'}));}
+  const mkw={global:toMkw(hs24)};
+  const regions=[{id:'global',name:'全球',periods:['1H','24H','3D']}];
+  const periodData={'1H':toMkw(hs1),'24H':toMkw(hs24),'3D':toMkw(hs3)};
+  function renderRegion(r){
+    const cards=r.periods.map(period=>{
+      const kws=periodData[period]||toMkw(hs24);
+      const rows=kws.map((item,i)=>{
+        let trendHtml='';
+        if(item.trend==='up')trendHtml=`<span class="trend-up">↑ ${item.tv}</span>`;
+        else if(item.trend==='down')trendHtml=`<span class="trend-down">↓ ${item.tv}</span>`;
+        else if(item.trend==='new')trendHtml=`<span class="trend-up" style="color:#74b9ff">NEW</span>`;
+        else trendHtml=`<span class="trend-same">—</span>`;
+        return `<tr><td class="rank">${i+1}</td><td class="keyword">${item.kw}</td><td class="trend">${trendHtml}</td><td class="stats">${item.suv}/${item.cuv}</td><td class="chat-rate">${item.cr}</td></tr>`;
+      }).join('');
+      return `<div class="monitor-card"><h3>${period}<span class="monitor-card-actions"><button class="btn-text" onclick="showDetailModal('${r.id}','${period}')">查看全部</button><button class="btn-text" onclick="downloadCSV('${r.id}','${period}')">下载</button></span></h3><table class="monitor-table"><thead><tr><th>排序</th><th>热搜词</th><th>排名变化</th><th>搜索人数/点击人数</th><th>搜索成功率</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    }).join('');
+    return `<div class="monitor-region"><div class="monitor-region-header"><h2>${r.name}</h2><div class="update-time">最新数据更新时间：${now}</div></div><div class="monitor-cards">${cards}</div></div>`;
   }
+  c.innerHTML=regions.map(r=>renderRegion(r)).join('')+renderFilteredRegion(mkw)+renderDetailModule(mkw);
+  updateDetailModule();updateFilteredRegion();
 }
-
-function renderMonitorRanking(ranking,days){
-  const card=document.getElementById('hs-ranking-card');
-  if(!ranking||ranking.length===0){
-    card.innerHTML='<div style="text-align:center;padding:40px;color:#666">暂无数据</div>';
-    return;
-  }
-  const timeLabels={'1':'24H','3':'3D','7':'7D','30':'30D'};
-  const rows=ranking.map(item=>{
-    let trendHtml='';
-    if(item.trend==='up') trendHtml=`<span class="trend-up">↑ ${item.trend_value}</span>`;
-    else if(item.trend==='down') trendHtml=`<span class="trend-down">↓ ${item.trend_value}</span>`;
-    else if(item.trend==='new') trendHtml=`<span style="color:#74b9ff;font-weight:600">NEW</span>`;
-    else trendHtml=`<span class="trend-same">—</span>`;
-    const successRate=item.search_uv?(item.click_uv/item.search_uv*100).toFixed(1)+'%':'/';
-    return `<tr>
-      <td class="rank">${item.rank}</td>
-      <td class="keyword">${escHtml(item.keyword)}</td>
-      <td class="trend">${trendHtml}</td>
-      <td class="stats">${item.search_uv.toLocaleString()}</td>
-      <td class="stats">${item.click_uv.toLocaleString()}</td>
-      <td class="chat-rate">${successRate}</td>
-    </tr>`;
+// Filtered region board
+function renderFilteredRegion(mkw){
+  return `<div class="monitor-region" id="filtered-region">
+    <div class="monitor-region-header"><h2>语区/国家筛选</h2>
+      <div style="display:flex;gap:12px;align-items:center;margin-top:8px">
+        <select id="fr-region" onchange="updateFilteredRegion()" style="padding:6px 10px;border-radius:6px;border:1px solid #333;background:#1a1a1a;color:#e0e0e0;font-size:13px">
+          <option value="en">英语区</option><option value="es">西语区</option><option value="zh">中文区</option></select>
+        <select id="fr-country" onchange="updateFilteredRegion()" style="padding:6px 10px;border-radius:6px;border:1px solid #333;background:#1a1a1a;color:#e0e0e0;font-size:13px">
+          <option value="all">全部国家</option><option>US</option><option>GB</option><option>MX</option><option>JP</option><option>BR</option><option>IN</option></select>
+      </div>
+    </div>
+    <div class="monitor-cards" id="fr-cards"></div>
+  </div>`;
+}
+function updateFilteredRegion(){
+  const region=document.getElementById('fr-region')?.value||'en';
+  // Use real data (global only for now, per-region not yet available)
+  const kws=_hsCache['3d']||[];
+  const cards=['1H','24H','3D'].map(period=>{
+    const periodKey={'1H':'1d','24H':'3d','3D':'7d'}[period]||'3d';
+    const data=(_hsCache[periodKey]||kws).slice(0,20);
+    const rows=data.map((r,i)=>{
+      const suv=_fmtK(r.search_uv);const cuv=_fmtK(r.click_uv);const cr=r.search_uv?(r.click_uv/r.search_uv*100).toFixed(1)+'%':'--';
+      let trendH='';if(r.trend==='up')trendH=`<span class="trend-up">↑ ${r.trend_value||0}</span>`;else if(r.trend==='down')trendH=`<span class="trend-down">↓ ${r.trend_value||0}</span>`;else if(r.trend==='new')trendH=`<span class="trend-up" style="color:#74b9ff">NEW</span>`;else trendH=`<span class="trend-same">—</span>`;
+      return `<tr><td class="rank">${i+1}</td><td class="keyword" style="text-align:center">${r.keyword}</td><td class="trend">${trendH}</td><td class="stats">${suv}/${cuv}</td><td class="chat-rate">${cr}</td></tr>`;
+    }).join('');
+    return `<div class="monitor-card"><h3>${period}<span class="monitor-card-actions"><button class="btn-text" onclick="showDetailModal('${region}','${period}')">查看全部</button><button class="btn-text" onclick="downloadCSV('${region}','${period}')">下载</button></span></h3><table class="monitor-table"><thead><tr><th>排序</th><th style="text-align:center">热搜词</th><th>排名变化</th><th>搜索人数/点击人数</th><th>搜索成功率</th></tr></thead><tbody>${rows}</tbody></table></div>`;
   }).join('');
-  card.innerHTML=`<h3>${timeLabels[days]||days+'D'} 热搜词排行
-    <span class="monitor-card-actions">
-      <button class="btn-text" onclick="downloadMonitorCSV()">下载CSV</button>
-    </span></h3>
-    <table class="monitor-table"><thead><tr>
-      <th>排序</th><th>热搜词</th><th>排名变化</th><th>搜索人数</th><th>点击人数</th><th>搜索成功率</th>
-    </tr></thead><tbody>${rows}</tbody></table>`;
+  const el=document.getElementById('fr-cards');
+  if(el)el.innerHTML=cards;
 }
-
-function downloadMonitorCSV(){
-  if(!_monitorRankingCache.length){alert('暂无数据');return;}
-  let csv='排序,热搜词,排名变化,搜索人数,点击人数,搜索成功率\n';
-  _monitorRankingCache.forEach(r=>{
-    const sr=r.search_uv?(r.click_uv/r.search_uv*100).toFixed(1)+'%':'/';
-    csv+=`${r.rank},"${r.keyword}",${r.trend==='up'?'+'+r.trend_value:(r.trend==='down'?'-'+r.trend_value:(r.trend==='new'?'NEW':'0'))},${r.search_uv},${r.click_uv},${sr}\n`;
+// Detail module at bottom of monitor
+function renderDetailModule(mkw){
+  return `<div class="monitor-region" id="detail-module">
+    <div class="monitor-region-header"><h2>自定义查询</h2></div>
+    <div class="detail-filters">
+      <div class="filter-group"><label>语区</label><select id="detail-region" onchange="updateDetailModule()"><option value="global">全球</option><option value="en">英语区</option><option value="es">西语区</option><option value="zh">中文区</option></select></div>
+      <div class="filter-group"><label>国家</label><select id="detail-country" onchange="updateDetailModule()"><option value="all">全部</option><option value="US">美国</option><option value="GB">英国</option><option value="MX">墨西哥</option><option value="JP">日本</option><option value="BR">巴西</option><option value="IN">印度</option><option value="DE">德国</option></select></div>
+      <div class="filter-group"><label>时间</label><select id="detail-time" onchange="updateDetailModule()"><option value="1H">1H</option><option value="24H" selected>24H</option><option value="3D">3D</option><option value="1W">1 Week</option><option value="1M">1 Month</option></select></div>
+    </div>
+    <div class="monitor-cards" style="grid-template-columns:1fr"><div class="monitor-card" id="detail-card" style="max-width:100%"></div></div>
+  </div>`;
+}
+function updateDetailModule(){
+  const region=document.getElementById('detail-region').value;
+  const time=document.getElementById('detail-time').value;
+  const card=document.getElementById('detail-card');
+  const timeKey={'1H':'1d','24H':'3d','3D':'7d','1W':'7d','1M':'30d'}[time]||'3d';
+  const data=(_hsCache[timeKey]||[]).slice(0,20);
+  const rows=data.map((r,i)=>{
+    const suv=_fmtK(r.search_uv);const cuv=_fmtK(r.click_uv);const cr=r.search_uv?(r.click_uv/r.search_uv*100).toFixed(1)+'%':'--';
+    let trendH='';if(r.trend==='up')trendH=`<span class="trend-up">↑ ${r.trend_value||0}</span>`;else if(r.trend==='down')trendH=`<span class="trend-down">↓ ${r.trend_value||0}</span>`;else if(r.trend==='new')trendH=`<span class="trend-up" style="color:#74b9ff">NEW</span>`;else trendH=`<span class="trend-same">—</span>`;
+    return `<tr><td class="rank">${i+1}</td><td class="keyword">${r.keyword}</td><td class="trend">${trendH}</td><td class="stats">${suv}/${cuv}</td><td class="chat-rate">${cr}</td></tr>`;
+  }).join('');
+  card.innerHTML=`<h3>${time}<span class="monitor-card-actions"><button class="btn-text" onclick="showDetailModal('${region}','${time}')">查看全部</button><button class="btn-text" onclick="downloadCSV('${region}','${time}')">下载</button></span></h3><table class="monitor-table"><thead><tr><th>排序</th><th>热搜词</th><th>排名变化</th><th>搜索人数/点击人数</th><th>搜索成功率</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+// Detail modal (top 200)
+function showDetailModal(region,period){
+  document.getElementById('detail-modal').classList.remove('hidden');
+  const title=document.getElementById('detail-modal-title');
+  const body=document.getElementById('detail-modal-body');
+  const regionNames={global:'全球',en:'英语区',es:'西语区',zh:'中文区'};
+  title.textContent=`${regionNames[region]||region} - ${period} 热搜词明细`;
+  const timeKey={'1H':'1d','24H':'3d','3D':'7d','1W':'7d','1M':'30d'}[period]||'3d';
+  const data=(_hsCache[timeKey]||[]).slice(0,200);
+  const rows=data.map((r,i)=>{
+    const suv=_fmtK(r.search_uv);const cuv=_fmtK(r.click_uv);const cr=r.search_uv?(r.click_uv/r.search_uv*100).toFixed(1)+'%':'--';
+    let trendH='';if(r.trend==='up')trendH=`<span class="trend-up">↑ ${r.trend_value||0}</span>`;else if(r.trend==='down')trendH=`<span class="trend-down">↓ ${r.trend_value||0}</span>`;else if(r.trend==='new')trendH=`<span class="trend-up" style="color:#74b9ff">NEW</span>`;else trendH=`<span class="trend-same">—</span>`;
+    return `<tr><td style="text-align:center">${i+1}</td><td style="text-align:left">${r.keyword}</td><td style="text-align:center">${trendH}</td><td style="text-align:center">${suv}/${cuv}</td><td style="text-align:center;color:#d4a847;font-weight:600">${cr}</td></tr>`;
   });
-  const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='热搜词排行.csv';a.click();URL.revokeObjectURL(url);
+  body.innerHTML=`<div class="detail-table-wrap"><table style="width:100%;font-size:13px;border-collapse:collapse"><thead><tr><th>排序</th><th style="text-align:left">热搜词</th><th>排名变化</th><th>搜索人数/点击人数</th><th>搜索成功率</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`;
 }
-
-// Keep these stubs so other code doesn't break
-function escHtml(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
-function renderFilteredRegion(){return '';}
-function updateFilteredRegion(){}
-function renderDetailModule(){return '';}
-function updateDetailModule(){}
+function closeDetailModal(){document.getElementById('detail-modal').classList.add('hidden')}
+function downloadCSV(region,period){
+  const regionNames={global:'全球',en:'英语区',es:'西语区',zh:'中文区'};
+  const timeKey={'1H':'1d','24H':'3d','3D':'7d','1W':'7d','1M':'30d'}[period]||'3d';
+  const data=(_hsCache[timeKey]||[]).slice(0,200);
+  let csv='排序,热搜词,排名变化,搜索人数,点击人数,搜索成功率\n';
+  data.forEach((r,i)=>{const cr=r.search_uv?(r.click_uv/r.search_uv*100).toFixed(1):'--';csv+=`${i+1},${r.keyword},${r.trend==='new'?'NEW':(r.trend==='up'?'+':r.trend==='down'?'-':'')+String(r.trend_value||0)},${r.search_uv},${r.click_uv},${cr}%\n`;});
+  const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`${regionNames[region]||region}_${period}_热搜词.csv`;a.click();URL.revokeObjectURL(url);
+}
 // ===== Editor =====
 async function openEditor(entityId){
   const resp=await fetch(`/api/search-terms/${entityId}`);
@@ -562,136 +565,82 @@ function escHtml(str){return str?str.replace(/&/g,'&amp;').replace(/</g,'&lt;').
 function updateGranularityFilter(){
   const g=document.getElementById('sd-granularity').value;
   const container=document.getElementById('sd-date-group');
-  container.innerHTML='';
+  if(g==='day'){
+    container.innerHTML='<input type="date" id="sd-date" value="2026-03-19" style="padding:6px 12px;border-radius:6px;border:1px solid #333;background:#1a1a1a;color:#e0e0e0;font-size:13px">';
+  }else if(g==='week'){
+    container.innerHTML='<select id="sd-week" style="padding:6px 12px;border-radius:6px;border:1px solid #333;background:#1a1a1a;color:#e0e0e0;font-size:13px"><option>2026-W12 (3/16-3/22)</option><option>2026-W11 (3/9-3/15)</option><option>2026-W10 (3/2-3/8)</option><option>2026-W09 (2/23-3/1)</option></select>';
+  }else{
+    container.innerHTML='<select id="sd-month" style="padding:6px 12px;border-radius:6px;border:1px solid #333;background:#1a1a1a;color:#e0e0e0;font-size:13px"><option>2026年3月</option><option>2026年2月</option><option>2026年1月</option><option>2025年12月</option></select>';
+  }
 }
-
-// Cache for daily data used by search dashboard
+// --- Cached real data ---
 let _sdDailyCache=null;
-
-async function loadSearchDashboard(){
-  updateGranularityFilter();
-  const g=document.getElementById('sd-granularity').value;
-  const qs=document.getElementById('sd-source')?.value||'';
-  const country=document.getElementById('sd-country')?.value||'';
-  const countryParam=(country&&country!=='all')?country:'';
-
-  // Fetch KPI + daily in parallel
-  try{
-    const [kpiResp, dailyResp]=await Promise.all([
-      fetch('/data/kpi.json'),
-      fetch('/data/daily.json')
-    ]);
-    const kpiData=await kpiResp.json();
-    const dailyData=await dailyResp.json();
-    _sdDailyCache=dailyData.rows||[];
-    renderSearchKpis(kpiData);
-    renderSearchTable(_sdDailyCache,g);
-  }catch(e){
-    console.error('loadSearchDashboard error:',e);
-    document.getElementById('sd-kpis').innerHTML='<div style="color:#e74c3c;padding:20px">数据加载失败: '+e.message+'</div>';
+let _sdKpiCache=null;
+async function _ensureSDData(){
+  if(!_sdDailyCache){
+    const [kRes,dRes]=await Promise.all([fetch('/data/kpi.json'),fetch('/data/daily.json')]);
+    _sdKpiCache=await kRes.json();
+    _sdDailyCache=(await dRes.json()).rows||[];
   }
 }
-
-function renderSearchKpis(kpiData){
-  const c=kpiData.current||{};
-  const p=kpiData.previous||{};
-  const successRate=c.total_searches?(c.clicked_searches/c.total_searches*100):0;
-  const prevSuccessRate=p.total_searches?(p.clicked_searches/p.total_searches*100):0;
-  const pen=c.dau?(c.search_uv/c.dau*100):0;
-  const prevPen=p.dau?(p.search_uv/p.dau*100):0;
-
-  function mkKpi(title,curVal,prevVal,isFmt,isPct){
-    if(curVal===undefined||curVal===null) return {title,value:'/',delta:'/',pct:'/',dir:'same'};
-    const delta=curVal-prevVal;
-    const pct=prevVal?((curVal/prevVal)*100):0;
-    const dir=delta>0?'up':(delta<0?'down':'same');
-    let valStr,deltaStr,pctStr;
-    if(isPct){
-      valStr=curVal.toFixed(2)+'%';
-      deltaStr=(delta>=0?'+':'')+delta.toFixed(2)+'%';
-    }else{
-      valStr=isFmt?curVal.toLocaleString():curVal;
-      deltaStr=(delta>=0?'+':'')+delta.toLocaleString();
-    }
-    pctStr=prevVal?(pct.toFixed(1)+'%'):'/';
-    return {title,value:valStr,delta:deltaStr,pct:pctStr,dir};
-  }
-
+function _fmtNum(n){return n==null?'/':Number(n).toLocaleString()}
+function _fmtDelta(cur,prev){if(cur==null||prev==null||prev===0)return{delta:'/',pct:'/',dir:'up'};const d=cur-prev;const pct=((cur/prev)*100).toFixed(1);return{delta:(d>=0?'+':'')+_fmtNum(d),pct:pct+'%',dir:d>=0?'up':'down'};}
+async function loadSearchDashboard(){
+  if(!document.getElementById('sd-date-group').innerHTML)updateGranularityFilter();
+  const g=document.getElementById('sd-granularity').value;
+  try{await _ensureSDData();}catch(e){console.error('Failed to load data',e);}
+  const cur=_sdKpiCache?.current||{};
+  const prev=_sdKpiCache?.previous||{};
+  const successRate=cur.total_searches?(cur.clicked_searches/cur.total_searches*100).toFixed(2)+'%':'/';
+  const prevSuccessRate=prev.total_searches?(prev.clicked_searches/prev.total_searches*100).toFixed(2)+'%':'/';
+  const penRate=cur.dau?(cur.search_uv/cur.dau*100).toFixed(2)+'%':'/';
+  const prevPenRate=prev.dau?(prev.search_uv/prev.dau*100).toFixed(2)+'%':'/';
+  const d1=_fmtDelta(cur.search_uv,prev.search_uv);
+  const d2=_fmtDelta(cur.search_pv,prev.search_pv);
+  const d3=_fmtDelta(cur.dau?cur.search_uv/cur.dau:null,prev.dau?prev.search_uv/prev.dau:null);
+  const d4=_fmtDelta(cur.click_uv,prev.click_uv);
+  const d5=_fmtDelta(cur.click_pv,prev.click_pv);
+  const d6=_fmtDelta(cur.total_searches?cur.clicked_searches/cur.total_searches:null,prev.total_searches?prev.clicked_searches/prev.total_searches:null);
   const kpis=[
-    mkKpi('总搜索人数',c.search_uv||0,p.search_uv||0,true),
-    mkKpi('总搜索次数',c.search_pv||0,p.search_pv||0,true),
-    mkKpi('搜索渗透率',c.dau?pen:null,c.dau?prevPen:null,false,true),
-    mkKpi('总点击人数',c.click_uv||0,p.click_uv||0,true),
-    mkKpi('总点击次数',c.click_pv||0,p.click_pv||0,true),
-    mkKpi('搜索成功率',successRate,prevSuccessRate,false,true),
+    {title:'总搜索人数',value:_fmtNum(cur.search_uv),...d1},
+    {title:'总搜索次数',value:_fmtNum(cur.search_pv),...d2},
+    {title:'搜索渗透率',value:penRate,...d3},
+    {title:'总点击人数',value:_fmtNum(cur.click_uv),...d4},
+    {title:'总点击次数',value:_fmtNum(cur.click_pv),...d5},
+    {title:'搜索成功率',value:successRate,...d6},
   ];
-  // If no DAU, mark penetration as '/'
-  if(!c.dau) kpis[2]={title:'搜索渗透率',value:'/',delta:'/',pct:'/',dir:'same'};
-
   document.getElementById('sd-kpis').innerHTML=kpis.map(k=>`
     <div class="kpi-card">
       <div class="kpi-title"><span>${k.title}</span><span class="info-icon" title="指标说明">ⓘ</span></div>
       <div class="kpi-value">${k.value}</div>
-      <div class="kpi-delta"><span class="${k.dir}">前期 ${k.dir==='up'?'▲':(k.dir==='down'?'▼':'—')}${k.delta}</span><span class="${k.dir}">环比 ${k.pct}</span></div>
+      <div class="kpi-delta"><span class="${k.dir}">上日 ${k.dir==='up'?'▲':'▼'}${k.delta}</span><span class="${k.dir}">环比 ${k.pct}</span></div>
     </div>`).join('');
-}
-
-function renderSearchTable(rows,granularity){
-  if(!rows||rows.length===0){
-    document.getElementById('sd-table').innerHTML='<div style="padding:20px;color:#666;text-align:center">暂无数据</div>';
-    return;
+  // Build table rows from real daily data
+  let rows=[];
+  const daily=_sdDailyCache||[];
+  const dateLabel=g==='day'?'日期':g==='week'?'周次':'月份';
+  if(g==='day'){
+    rows=daily.map(d=>{const sr=d.total_searches?(d.clicked_searches/d.total_searches*100).toFixed(0):'--';const pen=d.dau?(d.search_uv/d.dau*100).toFixed(1):'--';const avg=d.search_uv?(d.click_pv/d.search_uv).toFixed(2):'--';return{label:d.date,suv:d.search_uv,stimes:d.search_pv,pen,cuv:d.click_uv,ctimes:d.click_pv,avg,rate:sr};});
+  }else if(g==='week'){
+    // Aggregate daily into weeks
+    const weeks={};daily.forEach(d=>{const dt=new Date(d.date);const wk=`W${String(getISOWeek(dt)).padStart(2,'0')}`;if(!weeks[wk])weeks[wk]={label:wk,search_uv:0,search_pv:0,click_uv:0,click_pv:0,total_searches:0,clicked_searches:0,dau:0,days:0};const w=weeks[wk];w.search_uv+=d.search_uv;w.search_pv+=d.search_pv;w.click_uv+=d.click_uv;w.click_pv+=d.click_pv;w.total_searches+=d.total_searches;w.clicked_searches+=d.clicked_searches;w.dau+=d.dau;w.days++;});
+    rows=Object.values(weeks).map(w=>{const sr=w.total_searches?(w.clicked_searches/w.total_searches*100).toFixed(0):'--';const pen=w.dau?(w.search_uv/w.dau*100).toFixed(1):'--';const avg=w.search_uv?(w.click_pv/w.search_uv).toFixed(2):'--';return{label:w.label,suv:w.search_uv,stimes:w.search_pv,pen,cuv:w.click_uv,ctimes:w.click_pv,avg,rate:sr};});
+  }else{
+    const months={};daily.forEach(d=>{const mk=d.date.slice(0,7);if(!months[mk])months[mk]={label:mk,search_uv:0,search_pv:0,click_uv:0,click_pv:0,total_searches:0,clicked_searches:0,dau:0};const m=months[mk];m.search_uv+=d.search_uv;m.search_pv+=d.search_pv;m.click_uv+=d.click_uv;m.click_pv+=d.click_pv;m.total_searches+=d.total_searches;m.clicked_searches+=d.clicked_searches;m.dau+=d.dau;});
+    rows=Object.values(months).map(m=>{const sr=m.total_searches?(m.clicked_searches/m.total_searches*100).toFixed(0):'--';const pen=m.dau?(m.search_uv/m.dau*100).toFixed(1):'--';const avg=m.search_uv?(m.click_pv/m.search_uv).toFixed(2):'--';return{label:m.label,suv:m.search_uv,stimes:m.search_pv,pen,cuv:m.click_uv,ctimes:m.click_pv,avg,rate:sr};});
   }
-  let displayRows=rows;
-  let dateLabel='日期';
-
-  if(granularity==='week'){
-    dateLabel='周次';
-    const weekMap={};
-    rows.forEach(r=>{
-      const d=new Date(r.date+'T00:00:00Z');
-      const jan1=new Date(d.getUTCFullYear(),0,1);
-      const weekNum=Math.ceil(((d-jan1)/86400000+jan1.getUTCDay()+1)/7);
-      const key=d.getUTCFullYear()+'-W'+String(weekNum).padStart(2,'0');
-      if(!weekMap[key]) weekMap[key]={search_uv:0,search_pv:0,click_uv:0,click_pv:0,total_searches:0,clicked_searches:0,dau:0,days:0};
-      const w=weekMap[key];
-      w.search_uv+=r.search_uv;w.search_pv+=r.search_pv;w.click_uv+=r.click_uv;w.click_pv+=r.click_pv;
-      w.total_searches+=r.total_searches;w.clicked_searches+=r.clicked_searches;w.dau+=r.dau;w.days++;
-    });
-    displayRows=Object.keys(weekMap).sort((a,b)=>b.localeCompare(a)).map(k=>({date:k,...weekMap[k]}));
-  }else if(granularity==='month'){
-    dateLabel='月份';
-    const monthMap={};
-    rows.forEach(r=>{
-      const key=r.date.slice(0,7);
-      if(!monthMap[key]) monthMap[key]={search_uv:0,search_pv:0,click_uv:0,click_pv:0,total_searches:0,clicked_searches:0,dau:0,days:0};
-      const m=monthMap[key];
-      m.search_uv+=r.search_uv;m.search_pv+=r.search_pv;m.click_uv+=r.click_uv;m.click_pv+=r.click_pv;
-      m.total_searches+=r.total_searches;m.clicked_searches+=r.clicked_searches;m.dau+=r.dau;m.days++;
-    });
-    displayRows=Object.keys(monthMap).sort((a,b)=>b.localeCompare(a)).map(k=>({date:k,...monthMap[k]}));
-  }
-
   document.getElementById('sd-table').innerHTML=`<table><thead><tr>
     <th>${dateLabel}</th><th>搜索人数</th><th>搜索次数</th><th>搜索渗透率</th><th>点击人数</th><th>点击次数</th><th>人均搜索点击量</th><th>搜索成功率</th>
-  </tr></thead><tbody>${displayRows.map(d=>{
-    const pen=d.dau?(d.search_uv/d.dau*100).toFixed(1)+'%':'/';
-    const avg=d.search_uv?(d.click_pv/d.search_uv).toFixed(2):'/';
-    const rate=d.total_searches?((d.clicked_searches/d.total_searches)*100).toFixed(1)+'%':'/';
-    return `<tr>
-      <td>${d.date}</td><td>${d.search_uv.toLocaleString()}</td><td>${d.search_pv.toLocaleString()}</td><td>${pen}</td>
-      <td>${d.click_uv.toLocaleString()}</td><td>${d.click_pv.toLocaleString()}</td><td>${avg}</td><td>${rate}</td>
-    </tr>`}).join('')}</tbody></table>`;
+  </tr></thead><tbody>${rows.map(d=>`<tr>
+    <td>${d.label}</td><td>${d.suv.toLocaleString()}</td><td>${d.stimes.toLocaleString()}</td><td>${d.pen}%</td>
+    <td>${d.cuv.toLocaleString()}</td><td>${d.ctimes.toLocaleString()}</td><td>${d.avg}</td><td>${d.rate}%</td>
+  </tr>`).join('')}</tbody></table>`;
 }
-
+function getISOWeek(d){const t=new Date(d.valueOf());const day=(t.getDay()+6)%7;t.setDate(t.getDate()-day+3);const first=new Date(t.getFullYear(),0,4);return 1+Math.round(((t.getTime()-first.getTime())/86400000-((first.getDay()+6)%7)+3)/7);}
 function exportSearchDashboard(){
-  if(!_sdDailyCache||!_sdDailyCache.length){alert('暂无数据可导出');return;}
+  if(!_sdDailyCache){alert('数据尚未加载');return;}
   let csv='日期,搜索人数,搜索次数,搜索渗透率,点击人数,点击次数,人均搜索点击量,搜索成功率\n';
-  _sdDailyCache.forEach(d=>{
-    const pen=d.dau?(d.search_uv/d.dau*100).toFixed(1)+'%':'/';
-    const avg=d.search_uv?(d.click_pv/d.search_uv).toFixed(2):'/';
-    const rate=d.total_searches?((d.clicked_searches/d.total_searches)*100).toFixed(1)+'%':'/';
-    csv+=`${d.date},${d.search_uv},${d.search_pv},${pen},${d.click_uv},${d.click_pv},${avg},${rate}\n`;
-  });
+  _sdDailyCache.forEach(d=>{const sr=d.total_searches?(d.clicked_searches/d.total_searches*100).toFixed(1):'--';const pen=d.dau?(d.search_uv/d.dau*100).toFixed(1):'--';const avg=d.search_uv?(d.click_pv/d.search_uv).toFixed(2):'--';csv+=`${d.date},${d.search_uv},${d.search_pv},${pen}%,${d.click_uv},${d.click_pv},${avg},${sr}%\n`;});
   const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='搜索大盘数据.csv';a.click();URL.revokeObjectURL(url);
 }
 
